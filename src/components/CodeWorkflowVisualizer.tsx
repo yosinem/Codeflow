@@ -203,12 +203,30 @@ const CodeWorkflowVisualizer = () => {
         fields: ['events', 'writer'],
         methods: ['record()', 'flush()', 'archive()'],
       },
+      {
+        id: 'analytics',
+        type: 'class',
+        label: 'SignalAnalytics',
+        file: 'analytics.py',
+        fields: ['ingestors', 'reporters'],
+        methods: ['ingest()', 'aggregate()', 'report()'],
+      },
+      {
+        id: 'notifier',
+        type: 'class',
+        label: 'NotificationHub',
+        file: 'notify.py',
+        fields: ['channels', 'templates'],
+        methods: ['sendEmail()', 'pushAlert()', 'broadcast()'],
+      },
     ];
 
     const sampleConnections: WorkflowConnection[] = [
       { from: 'start', to: 'auth', toMethod: 'login()', label: 'authenticate' },
       { from: 'auth', to: 'user', fromMethod: 'validate()', toMethod: 'getUser()', label: 'load user' },
       { from: 'user', to: 'audit', fromMethod: 'updateUser()', toMethod: 'record()', label: 'audit change' },
+      { from: 'audit', to: 'analytics', fromMethod: 'archive()', toMethod: 'ingest()', label: 'forward events' },
+      { from: 'analytics', to: 'notifier', fromMethod: 'report()', toMethod: 'sendEmail()', label: 'alert ops' },
     ];
 
     return { sampleNodes, sampleConnections };
@@ -1093,16 +1111,60 @@ json.dumps(result)
           </div>
         </header>
 
-        <section className="control-panel">
-          <div className="control-grid">
-            <div className="control-section">
+        <div className="workspace-grid">
+          <div className="workspace-region">
+            <div className="workspace-main">
+              <div className="canvas-shell" ref={canvasWrapperRef}>
+                <div className="canvas-grid-layer" />
+                {parseStatus && !showImportModal && <div className="canvas-status">{parseStatus}</div>}
+                <div className="canvas-viewport-stack">
+                  <button className="canvas-viewport-button" onClick={handleZoomOut} title="Zoom out">
+                    <ZoomOut className="w-4 h-4" />
+                  </button>
+                  <button className="canvas-viewport-button" onClick={handleResetView} title="Reset view">
+                    <Move className="w-4 h-4" />
+                  </button>
+                  <button className="canvas-viewport-button" onClick={handleZoomIn} title="Zoom in">
+                    <ZoomIn className="w-4 h-4" />
+                  </button>
+                  <button className="canvas-viewport-button" onClick={handleZoomToFit} title="Zoom to fit">
+                    <Maximize2 className="w-4 h-4" />
+                  </button>
+                </div>
+                <svg
+                  ref={svgRef}
+                  className={`canvas-svg ${isPanning ? 'is-panning' : ''}`}
+                  onWheel={handleWheel}
+                  onPointerDown={handlePointerDown}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={endPan}
+                  onPointerLeave={endPan}
+                  onPointerCancel={endPan}
+                >
+                  <g transform={`translate(${viewTransform.x} ${viewTransform.y}) scale(${viewTransform.scale})`}>
+                    {getDisplayConnections().map((conn, i) => renderConnection(conn, i))}
+                    {nodes.map((node) => renderNode(node))}
+                  </g>
+                </svg>
+                <div className="canvas-readout">
+                  <span>{Math.round(viewTransform.scale * 100)}% zoom</span>
+                  <span>
+                    pan {Math.round(viewTransform.x)}px, {Math.round(viewTransform.y)}px
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <aside className="control-dock">
+            <div className="control-card control-card-emphasis">
               <div className="control-heading">
                 <span className="control-label">Source</span>
                 <p className="control-description">Load or refresh the workflow data.</p>
               </div>
-              <div className="control-actions">
+              <div className="control-button-grid">
                 <button
-                  className="control-button primary"
+                  className="control-button primary span-2"
                   onClick={() => parsePythonCode(pythonCode)}
                   disabled={isLoadingPyodide}
                 >
@@ -1120,12 +1182,12 @@ json.dumps(result)
               </div>
             </div>
 
-            <div className="control-section">
+            <div className="control-card">
               <div className="control-heading">
                 <span className="control-label">Display</span>
                 <p className="control-description">Toggle annotations and grouping.</p>
               </div>
-              <div className="control-actions">
+              <div className="control-toggle-grid">
                 <button
                   className={`control-toggle ${showLabels ? 'is-active' : ''}`}
                   onClick={() => setShowLabels((prev) => !prev)}
@@ -1150,77 +1212,68 @@ json.dumps(result)
               </div>
             </div>
 
-          </div>
-
-          <div className="control-panel-footer">
-            <div className="control-stats">
-              <span>
-                <strong>{nodes.length}</strong> nodes
-              </span>
-              <span>
-                <strong>{connections.length}</strong> connections
-              </span>
-              {groupConnections && (
-                <span>
-                  <strong>{getDisplayConnections().length}</strong> grouped
-                </span>
-              )}
+            <div className="control-card">
+              <div className="control-heading">
+                <span className="control-label">Stats</span>
+                <p className="control-description">Live counts and parser state.</p>
+              </div>
+              <div className="control-stat-grid">
+                <div className="stat-pill">
+                  <span>Nodes</span>
+                  <strong>{nodes.length}</strong>
+                </div>
+                <div className="stat-pill">
+                  <span>Connections</span>
+                  <strong>{connections.length}</strong>
+                </div>
+                {groupConnections && (
+                  <div className="stat-pill">
+                    <span>Grouped</span>
+                    <strong>{getDisplayConnections().length}</strong>
+                  </div>
+                )}
+              </div>
+              <div className="control-status-tags">
+                {pyodide ? (
+                  <span className="status-pill success">Parser Ready</span>
+                ) : (
+                  <span className="status-pill">Awaiting Parser</span>
+                )}
+                {highlightMode && <span className="status-pill info">Focus Mode</span>}
+              </div>
             </div>
-            <div className="app-status-group">
-              {pyodide && <span className="status-pill success">Parser Ready</span>}
-              {highlightMode && <span className="status-pill info">Focus Mode</span>}
-            </div>
-          </div>
-        </section>
 
-        <div className="workspace-region">
-          <div className="workspace-main">
-            <div className="canvas-shell" ref={canvasWrapperRef}>
-              <div className="canvas-grid-layer" />
-              {parseStatus && !showImportModal && <div className="canvas-status">{parseStatus}</div>}
-              <div className="canvas-viewport-stack">
-                <button className="canvas-viewport-button" onClick={handleZoomOut} title="Zoom out">
-                  <ZoomOut className="w-4 h-4" />
-                </button>
-                <button className="canvas-viewport-button" onClick={handleResetView} title="Reset view">
-                  <Move className="w-4 h-4" />
-                </button>
-                <button className="canvas-viewport-button" onClick={handleZoomIn} title="Zoom in">
-                  <ZoomIn className="w-4 h-4" />
-                </button>
-                <button className="canvas-viewport-button" onClick={handleZoomToFit} title="Zoom to fit">
+            <div className="control-card">
+              <div className="control-heading">
+                <span className="control-label">Viewport</span>
+                <p className="control-description">Quick navigation actions.</p>
+              </div>
+              <div className="control-icon-grid">
+                <button className="control-icon-button" onClick={handleZoomToFit} title="Zoom to fit">
                   <Maximize2 className="w-4 h-4" />
+                  <span>Fit</span>
+                </button>
+                <button className="control-icon-button" onClick={handleResetView} title="Reset view">
+                  <Move className="w-4 h-4" />
+                  <span>Reset</span>
+                </button>
+                <button className="control-icon-button" onClick={handleZoomIn} title="Zoom in">
+                  <ZoomIn className="w-4 h-4" />
+                  <span>Zoom +</span>
+                </button>
+                <button className="control-icon-button" onClick={handleZoomOut} title="Zoom out">
+                  <ZoomOut className="w-4 h-4" />
+                  <span>Zoom -</span>
                 </button>
               </div>
-              <svg
-                ref={svgRef}
-                className={`canvas-svg ${isPanning ? 'is-panning' : ''}`}
-                onWheel={handleWheel}
-                onPointerDown={handlePointerDown}
-                onPointerMove={handlePointerMove}
-                onPointerUp={endPan}
-                onPointerLeave={endPan}
-                onPointerCancel={endPan}
-              >
-                <g transform={`translate(${viewTransform.x} ${viewTransform.y}) scale(${viewTransform.scale})`}>
-                  {getDisplayConnections().map((conn, i) => renderConnection(conn, i))}
-                  {nodes.map((node) => renderNode(node))}
-                </g>
-              </svg>
-              <div className="canvas-readout">
-                <span>{Math.round(viewTransform.scale * 100)}% zoom</span>
-                <span>
-                  pan {Math.round(viewTransform.x)}px, {Math.round(viewTransform.y)}px
-                </span>
-              </div>
             </div>
-          </div>
+          </aside>
         </div>
 
-      {showImportModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
-            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+        {showImportModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
+              <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
               <h2 className="text-xl font-semibold text-slate-900">Import Python Code</h2>
               <button onClick={() => setShowImportModal(false)} className="text-slate-400 hover:text-slate-600">
                 ×
@@ -1279,7 +1332,7 @@ json.dumps(result)
             </div>
           </div>
         </div>
-      )}
+        )}
 
         <footer className="workspace-footer">
           <div className="flex items-center gap-4 text-sm text-slate-600">
