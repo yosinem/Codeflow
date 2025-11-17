@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react';
 import {
   Play,
   Settings,
   Code,
   Eye,
-  Plus,
-  Trash2,
   RefreshCw,
   Upload,
   FileCode,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Move,
 } from 'lucide-react';
 
 const PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v0.24.1/full/';
@@ -166,6 +169,12 @@ const CodeWorkflowVisualizer = () => {
   const [showLabels, setShowLabels] = useState(true);
   const [groupConnections, setGroupConnections] = useState(false);
   const [highlightMode, setHighlightMode] = useState(false);
+  const [viewTransform, setViewTransform] = useState({ scale: 1, x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+
+  const canvasWrapperRef = useRef<HTMLDivElement | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const panStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const sampleData = useMemo(() => {
     const sampleNodes: WorkflowNode[] = [
@@ -186,11 +195,20 @@ const CodeWorkflowVisualizer = () => {
         fields: ['db_connection', 'cache'],
         methods: ['getUser()', 'updateUser()', 'deleteUser()'],
       },
+      {
+        id: 'audit',
+        type: 'class',
+        label: 'AuditTrail',
+        file: 'audit.py',
+        fields: ['events', 'writer'],
+        methods: ['record()', 'flush()', 'archive()'],
+      },
     ];
 
     const sampleConnections: WorkflowConnection[] = [
       { from: 'start', to: 'auth', toMethod: 'login()', label: 'authenticate' },
-      { from: 'start', to: 'user', toMethod: 'getUser()', label: 'processRequest' },
+      { from: 'auth', to: 'user', fromMethod: 'validate()', toMethod: 'getUser()', label: 'load user' },
+      { from: 'user', to: 'audit', fromMethod: 'updateUser()', toMethod: 'record()', label: 'audit change' },
     ];
 
     return { sampleNodes, sampleConnections };
@@ -532,25 +550,18 @@ json.dumps(result)
     return Object.values(grouped);
   };
 
-  const deleteNode = (nodeId: string) => {
-    const updatedNodes = nodes.filter((n) => n.id !== nodeId);
-    const updatedConnections = connections.filter((c) => c.from !== nodeId && c.to !== nodeId);
-    const positioned = autoLayout(updatedNodes, updatedConnections);
-    setNodes(positioned);
-    setConnections(updatedConnections);
-    setSelectedNode(null);
-  };
+  const clampScale = (value: number) => Math.max(0.4, Math.min(2.5, value));
 
   const getNodeById = (nodeId: string) => nodes.find((n) => n.id === nodeId);
 
-  const getNodeBounds = (node: WorkflowNode & { x: number; y: number }) => {
+  const getNodeBounds = useCallback((node: WorkflowNode & { x: number; y: number }) => {
     if (node.type === 'start' || node.type === 'end') {
       return { x: node.x, y: node.y, width: 80, height: 60 };
     }
 
     const nodeHeight = 40 + (node.fields?.length || 0) * 18 + (node.methods?.length || 0) * 18 + 10;
     return { x: node.x, y: node.y, width: 200, height: nodeHeight };
-  };
+  }, []);
 
   const getMethodPosition = (nodeId: string, methodName?: string, isSource = true) => {
     const node = getNodeById(nodeId);
@@ -820,7 +831,7 @@ json.dumps(result)
 
     if (node.type === 'start') {
       return (
-        <g key={node.id} transform={`translate(${node.x}, ${node.y})`}>
+        <g key={node.id} transform={`translate(${node.x}, ${node.y})`} data-node-interactive="true">
           <rect
             width={80}
             height={60}
@@ -845,7 +856,7 @@ json.dumps(result)
 
     if (node.type === 'end') {
       return (
-        <g key={node.id} transform={`translate(${node.x}, ${node.y})`}>
+        <g key={node.id} transform={`translate(${node.x}, ${node.y})`} data-node-interactive="true">
           <rect
             width={80}
             height={60}
@@ -868,7 +879,7 @@ json.dumps(result)
     const nodeHeight = 40 + (node.fields?.length || 0) * 18 + (node.methods?.length || 0) * 18 + 10;
 
     return (
-      <g key={node.id} transform={`translate(${node.x}, ${node.y})`}>
+      <g key={node.id} transform={`translate(${node.x}, ${node.y})`} data-node-interactive="true">
         <rect
           width={200}
           height={nodeHeight}
@@ -927,127 +938,284 @@ json.dumps(result)
     );
   };
 
+  const getCanvasCenterPoint = () => {
+    if (!canvasWrapperRef.current) return null;
+    const rect = canvasWrapperRef.current.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+  };
+
+  const getSvgPoint = (clientX: number, clientY: number) => {
+    if (!svgRef.current) {
+      return { x: clientX, y: clientY };
+    }
+
+    const point = svgRef.current.createSVGPoint();
+    point.x = clientX;
+    point.y = clientY;
+
+    const ctm = svgRef.current.getScreenCTM();
+    if (!ctm) {
+      return { x: clientX, y: clientY };
+    }
+
+    const inverted = ctm.inverse();
+    const svgPoint = point.matrixTransform(inverted);
+    return { x: svgPoint.x, y: svgPoint.y };
+  };
+
+  const zoomToPoint = (scaleFactor: number, point?: { x: number; y: number }) => {
+    const referencePoint = point ?? getCanvasCenterPoint();
+    setViewTransform((prev) => {
+      const nextScale = clampScale(prev.scale * scaleFactor);
+      if (!svgRef.current || !referencePoint) {
+        return { ...prev, scale: nextScale };
+      }
+
+      const svgPoint = getSvgPoint(referencePoint.x, referencePoint.y);
+      const graphPoint = {
+        x: (svgPoint.x - prev.x) / prev.scale,
+        y: (svgPoint.y - prev.y) / prev.scale,
+      };
+
+      return {
+        scale: nextScale,
+        x: svgPoint.x - graphPoint.x * nextScale,
+        y: svgPoint.y - graphPoint.y * nextScale,
+      };
+    });
+  };
+
+  const handleWheel = (event: ReactWheelEvent<SVGSVGElement>) => {
+    event.preventDefault();
+    const scaleFactor = event.deltaY < 0 ? 1.1 : 0.9;
+    zoomToPoint(scaleFactor, { x: event.clientX, y: event.clientY });
+  };
+
+  const handlePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if ((event.target as HTMLElement)?.closest('[data-node-interactive="true"]')) {
+      return;
+    }
+
+    setIsPanning(true);
+    panStartRef.current = { x: event.clientX, y: event.clientY };
+    svgRef.current?.setPointerCapture(event.pointerId);
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (!isPanning || !panStartRef.current) return;
+
+    const dx = event.clientX - panStartRef.current.x;
+    const dy = event.clientY - panStartRef.current.y;
+    panStartRef.current = { x: event.clientX, y: event.clientY };
+    setViewTransform((prev) => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
+  };
+
+  const endPan = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (isPanning) {
+      setIsPanning(false);
+    }
+    panStartRef.current = null;
+
+    if (svgRef.current?.hasPointerCapture(event.pointerId)) {
+      svgRef.current.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const handleResetView = () => {
+    setViewTransform({ scale: 1, x: 0, y: 0 });
+  };
+
+  const handleZoomIn = () => zoomToPoint(1.15);
+  const handleZoomOut = () => zoomToPoint(0.85);
+
+  const handleZoomToFit = useCallback(() => {
+    if (!canvasWrapperRef.current || nodes.length === 0) return;
+    const positionedNodes = nodes.filter((node): node is WorkflowNode & { x: number; y: number } =>
+      typeof node.x === 'number' && typeof node.y === 'number',
+    );
+
+    if (!positionedNodes.length) return;
+
+    const bounds = positionedNodes.map((node) => getNodeBounds(node));
+    const minX = Math.min(...bounds.map((b) => b.x));
+    const minY = Math.min(...bounds.map((b) => b.y));
+    const maxX = Math.max(...bounds.map((b) => b.x + b.width));
+    const maxY = Math.max(...bounds.map((b) => b.y + b.height));
+    const contentWidth = maxX - minX || 1;
+    const contentHeight = maxY - minY || 1;
+    const padding = 160;
+    const rect = canvasWrapperRef.current.getBoundingClientRect();
+
+    const scaleX = (rect.width - padding) / contentWidth;
+    const scaleY = (rect.height - padding) / contentHeight;
+    const nextScale = clampScale(Math.min(scaleX, scaleY));
+    const centerX = minX + contentWidth / 2;
+    const centerY = minY + contentHeight / 2;
+
+    setViewTransform({
+      scale: Number.isFinite(nextScale) ? nextScale : 1,
+      x: rect.width / 2 - centerX * (Number.isFinite(nextScale) ? nextScale : 1),
+      y: rect.height / 2 - centerY * (Number.isFinite(nextScale) ? nextScale : 1),
+    });
+  }, [nodes, getNodeBounds]);
+
+  useEffect(() => {
+    if (!nodes.length) return;
+    const frame = requestAnimationFrame(() => {
+      handleZoomToFit();
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [nodes, handleZoomToFit]);
+
   return (
-    <div className="flex flex-col min-h-screen bg-slate-100">
-      <header className="bg-white border-b border-slate-200 px-6 py-4">
-        <div className="flex items-center justify-between">
+    <div className="app-frame">
+      <div className="app-shell">
+        <header className="app-header">
           <div>
             <p className="text-xs uppercase tracking-wide text-slate-500">Workflow</p>
-            <h1 className="text-xl font-semibold text-slate-900">Python Class Visualizer</h1>
+            <h1 className="text-2xl font-semibold text-slate-900">Python Class Visualizer</h1>
+            <p className="text-sm text-slate-500 max-w-3xl">
+              Map Python classes, inspect relationships, and navigate large modules with a responsive diagram workspace.
+            </p>
           </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => parsePythonCode(pythonCode)}
-              className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm"
-              disabled={isLoadingPyodide}
-            >
-              <Play className="w-4 h-4" />
-              Run Parser
-            </button>
-            <button
-              onClick={relayout}
-              className="inline-flex items-center gap-2 border border-slate-200 px-4 py-2 rounded-lg text-sm text-slate-700 hover:bg-slate-50"
-            >
-              <RefreshCw className="w-4 h-4" />
-              Relayout
-            </button>
+          <div className="app-status-group">
+            {pyodide ? (
+              <span className="status-pill success">Parser Ready</span>
+            ) : (
+              <span className="status-pill">Load code to enable parsing</span>
+            )}
+            <span className="status-pill">{Math.round(viewTransform.scale * 100)}% zoom</span>
+            {highlightMode && <span className="status-pill info">Focus Mode</span>}
           </div>
-        </div>
-      </header>
+        </header>
 
-      <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center gap-3 text-sm text-slate-600">
-        <button
-          className="inline-flex items-center gap-2 px-3 py-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"
-          onClick={() => setShowImportModal(true)}
-        >
-          <Upload className="w-4 h-4" />
-          Import Code
-        </button>
-        <button
-          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg ${showLabels ? 'bg-blue-50 text-blue-700' : 'border border-slate-200 hover:bg-slate-50'}`}
-          onClick={() => setShowLabels((prev) => !prev)}
-        >
-          <Eye className="w-4 h-4" />
-          Labels
-        </button>
-        <button
-          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg ${groupConnections ? 'bg-blue-50 text-blue-700' : 'border border-slate-200 hover:bg-slate-50'}`}
-          onClick={() => setGroupConnections((prev) => !prev)}
-        >
-          <Code className="w-4 h-4" />
-          Group Connections
-        </button>
-        <button
-          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg ${highlightMode ? 'bg-blue-50 text-blue-700' : 'border border-slate-200 hover:bg-slate-50'}`}
-          onClick={() => setHighlightMode((prev) => !prev)}
-        >
-          <Settings className="w-4 h-4" />
-          Focus Mode
-        </button>
-      </div>
-
-      <div className="flex flex-1 overflow-hidden">
-        <aside className="w-72 bg-white border-r border-slate-200 p-4 flex flex-col gap-4 overflow-auto">
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-slate-900">Nodes</h2>
-              <button className="text-blue-600 hover:text-blue-700 text-xs inline-flex items-center gap-1">
-                <Plus className="w-3 h-3" />
-                Add
-              </button>
-            </div>
-            <div className="space-y-2">
-              {nodes.map((node) => (
+        <section className="control-panel">
+          <div className="control-grid">
+            <div className="control-section">
+              <div className="control-heading">
+                <span className="control-label">Source</span>
+                <p className="control-description">Load or refresh the workflow data.</p>
+              </div>
+              <div className="control-actions">
                 <button
-                  key={node.id}
-                  className={`w-full text-left px-3 py-2 rounded-lg border text-sm ${selectedNode === node.id ? 'border-blue-200 bg-blue-50 text-blue-800' : 'border-slate-200 hover:border-slate-300'}`}
-                  onClick={() => setSelectedNode(node.id)}
+                  className="control-button primary"
+                  onClick={() => parsePythonCode(pythonCode)}
+                  disabled={isLoadingPyodide}
                 >
-                  <p className="font-medium">{node.label}</p>
-                  <p className="text-xs text-slate-500">{node.type.toUpperCase()}</p>
+                  <Play className="w-4 h-4" />
+                  {isLoadingPyodide ? 'Loading Parser' : 'Run Parser'}
                 </button>
-              ))}
-            </div>
-          </div>
-
-          {selectedNode && (
-            <div className="border border-slate-200 rounded-xl p-4 bg-slate-50">
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-slate-500">Selected Node</p>
-                  <h3 className="text-sm font-semibold text-slate-900">
-                    {nodes.find((node) => node.id === selectedNode)?.label}
-                  </h3>
-                </div>
-                <button
-                  className="text-red-500 hover:text-red-600"
-                  onClick={() => deleteNode(selectedNode)}
-                  title="Delete node"
-                >
-                  <Trash2 className="w-4 h-4" />
+                <button className="control-button secondary" onClick={() => setShowImportModal(true)}>
+                  <Upload className="w-4 h-4" />
+                  Import Code
+                </button>
+                <button className="control-button ghost" onClick={relayout}>
+                  <RefreshCw className="w-4 h-4" />
+                  Relayout
                 </button>
               </div>
-              <p className="text-xs text-slate-500">
-                {nodes.find((node) => node.id === selectedNode)?.file}
-              </p>
             </div>
-          )}
-        </aside>
 
-        <div className="flex-1 overflow-auto p-8 relative">
-          {parseStatus && !showImportModal && (
-            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-10">
-              <div className="bg-white border border-slate-200 rounded-lg shadow-lg px-4 py-2 text-sm text-slate-700">
-                {parseStatus}
+            <div className="control-section">
+              <div className="control-heading">
+                <span className="control-label">Display</span>
+                <p className="control-description">Toggle annotations and grouping.</p>
+              </div>
+              <div className="control-actions">
+                <button
+                  className={`control-toggle ${showLabels ? 'is-active' : ''}`}
+                  onClick={() => setShowLabels((prev) => !prev)}
+                >
+                  <Eye className="w-4 h-4" />
+                  Labels
+                </button>
+                <button
+                  className={`control-toggle ${groupConnections ? 'is-active' : ''}`}
+                  onClick={() => setGroupConnections((prev) => !prev)}
+                >
+                  <Code className="w-4 h-4" />
+                  Group Connections
+                </button>
+                <button
+                  className={`control-toggle ${highlightMode ? 'is-active' : ''}`}
+                  onClick={() => setHighlightMode((prev) => !prev)}
+                >
+                  <Settings className="w-4 h-4" />
+                  Focus Mode
+                </button>
               </div>
             </div>
-          )}
-          <svg width={1400} height={800} className="bg-transparent">
-            {getDisplayConnections().map((conn, i) => renderConnection(conn, i))}
-            {nodes.map((node) => renderNode(node))}
-          </svg>
+
+          </div>
+
+          <div className="control-panel-footer">
+            <div className="control-stats">
+              <span>
+                <strong>{nodes.length}</strong> nodes
+              </span>
+              <span>
+                <strong>{connections.length}</strong> connections
+              </span>
+              {groupConnections && (
+                <span>
+                  <strong>{getDisplayConnections().length}</strong> grouped
+                </span>
+              )}
+            </div>
+            <div className="app-status-group">
+              {pyodide && <span className="status-pill success">Parser Ready</span>}
+              {highlightMode && <span className="status-pill info">Focus Mode</span>}
+            </div>
+          </div>
+        </section>
+
+        <div className="workspace-region">
+          <div className="workspace-main">
+            <div className="canvas-shell" ref={canvasWrapperRef}>
+              <div className="canvas-grid-layer" />
+              {parseStatus && !showImportModal && <div className="canvas-status">{parseStatus}</div>}
+              <div className="canvas-viewport-stack">
+                <button className="canvas-viewport-button" onClick={handleZoomOut} title="Zoom out">
+                  <ZoomOut className="w-4 h-4" />
+                </button>
+                <button className="canvas-viewport-button" onClick={handleResetView} title="Reset view">
+                  <Move className="w-4 h-4" />
+                </button>
+                <button className="canvas-viewport-button" onClick={handleZoomIn} title="Zoom in">
+                  <ZoomIn className="w-4 h-4" />
+                </button>
+                <button className="canvas-viewport-button" onClick={handleZoomToFit} title="Zoom to fit">
+                  <Maximize2 className="w-4 h-4" />
+                </button>
+              </div>
+              <svg
+                ref={svgRef}
+                className={`canvas-svg ${isPanning ? 'is-panning' : ''}`}
+                onWheel={handleWheel}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={endPan}
+                onPointerLeave={endPan}
+                onPointerCancel={endPan}
+              >
+                <g transform={`translate(${viewTransform.x} ${viewTransform.y}) scale(${viewTransform.scale})`}>
+                  {getDisplayConnections().map((conn, i) => renderConnection(conn, i))}
+                  {nodes.map((node) => renderNode(node))}
+                </g>
+              </svg>
+              <div className="canvas-readout">
+                <span>{Math.round(viewTransform.scale * 100)}% zoom</span>
+                <span>
+                  pan {Math.round(viewTransform.x)}px, {Math.round(viewTransform.y)}px
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
 
       {showImportModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -1113,31 +1281,32 @@ json.dumps(result)
         </div>
       )}
 
-      <footer className="bg-white border-t border-slate-200 px-6 py-3 flex items-center justify-between text-sm text-slate-600">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <span className="font-medium">{nodes.length}</span> nodes
-            <span className="mx-1">•</span>
-            <span className="font-medium">{connections.length}</span> connections
-            {groupConnections && (
-              <>
-                <span className="mx-1">•</span>
-                <span className="text-blue-600 font-medium">{getDisplayConnections().length} grouped</span>
-              </>
-            )}
+        <footer className="workspace-footer">
+          <div className="flex items-center gap-4 text-sm text-slate-600">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">{nodes.length}</span> nodes
+              <span className="mx-1">•</span>
+              <span className="font-medium">{connections.length}</span> connections
+              {groupConnections && (
+                <>
+                  <span className="mx-1">•</span>
+                  <span className="text-blue-600 font-medium">{getDisplayConnections().length} grouped</span>
+                </>
+              )}
+            </div>
+            {pyodide && <span className="text-green-600">● Parser Ready</span>}
+            {highlightMode && <span className="text-blue-600">● Focus Mode</span>}
           </div>
-          {pyodide && <span className="text-green-600">● Parser Ready</span>}
-          {highlightMode && <span className="text-blue-600">● Focus Mode</span>}
-        </div>
-        <div className="flex items-center gap-3">
-          <button className="p-2 hover:bg-slate-100 rounded-lg" title="Zoom to fit">
-            <Eye className="w-4 h-4" />
-          </button>
-          <button className="p-2 hover:bg-slate-100 rounded-lg" title="View code">
-            <FileCode className="w-4 h-4" />
-          </button>
-        </div>
-      </footer>
+          <div className="flex items-center gap-3">
+            <button className="p-2 hover:bg-slate-100 rounded-lg" title="Zoom to fit" onClick={handleZoomToFit}>
+              <Eye className="w-4 h-4" />
+            </button>
+            <button className="p-2 hover:bg-slate-100 rounded-lg" title="View code">
+              <FileCode className="w-4 h-4" />
+            </button>
+          </div>
+        </footer>
+      </div>
     </div>
   );
 };
