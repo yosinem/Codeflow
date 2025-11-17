@@ -756,7 +756,6 @@ json.dumps(result)
       setGithubStatus(
         formatStatus(`Loaded ${meta.files.length} file${meta.files.length === 1 ? '' : 's'} from GitHub`, 'success'),
       );
-      setShowImportModal(false);
     } catch (error) {
       const err = error as Error & { rateLimit?: RateLimitInfo | null };
       setGithubRateLimit(err.rateLimit || null);
@@ -1518,116 +1517,22 @@ json.dumps(result)
             </div>
           </aside>
 
-          <aside className="metadata-drawer">
-            <div className="metadata-card">
-              <div className="control-heading">
-                <span className="control-label">GitHub Metadata</span>
-                <p className="control-description">Commit context, files, and request status.</p>
-              </div>
-
-              {githubMetadata ? (
-                <>
-                  <div className="metadata-commit">
-                    <div className="metadata-author">
-                      {githubMetadata.author.avatarUrl ? (
-                        <img src={githubMetadata.author.avatarUrl} alt={githubMetadata.author.name} />
-                      ) : (
-                        <div className="metadata-avatar-fallback">
-                          {(
-                            githubMetadata.author.name
-                              .split(' ')
-                              .filter(Boolean)
-                              .map((word) => word[0])
-                              .join('') || 'GH'
-                          )
-                            .slice(0, 2)
-                            .toUpperCase()}
-                        </div>
-                      )}
-                      <div>
-                        <p className="metadata-author-name">{githubMetadata.author.name}</p>
-                        <p className="metadata-author-repo">
-                          {githubMetadata.repo} · {githubMetadata.identifier}
-                        </p>
-                        {githubMetadata.timestamp && (
-                          <p className="metadata-timestamp">{formatTimestamp(githubMetadata.timestamp)}</p>
-                        )}
-                      </div>
-                    </div>
-                    <p className="metadata-title">{githubMetadata.title}</p>
-                    <div className="metadata-stats-grid">
-                      <span>+{githubMetadata.stats.additions} additions</span>
-                      <span>-{githubMetadata.stats.deletions} deletions</span>
-                      <span>{githubMetadata.stats.changedFiles} files</span>
-                    </div>
-                    <a className="metadata-link" href={githubMetadata.url} target="_blank" rel="noreferrer">
-                      View on GitHub
-                    </a>
-                  </div>
-
-                  <div className="metadata-file-list">
-                    <div className="metadata-file-header">
-                      <span>Changed files</span>
-                      <span>{githubMetadata.files.length}</span>
-                    </div>
-                    <ul>
-                      {githubMetadata.files.slice(0, 6).map((file) => (
-                        <li key={file.filename}>
-                          <div>
-                            <p className="metadata-file-name">{file.filename}</p>
-                            <p className="metadata-file-status">{file.status}</p>
-                          </div>
-                          <span className="metadata-file-diff">
-                            +{file.additions} / -{file.deletions}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                    {githubMetadata.files.length > 6 && (
-                      <p className="metadata-file-more">+{githubMetadata.files.length - 6} more files in view</p>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="metadata-empty">
-                  <p>Import a GitHub commit or PR to populate this drawer.</p>
-                  <button className="metadata-empty-button" onClick={() => openImportModal('github')}>
-                    Open GitHub Import
-                  </button>
-                </div>
-              )}
-
-              <div className="metadata-status-block">
-                <div className={`metadata-status-pill ${getStatusTone(githubStatus)}`}>
-                  {githubStatus || 'Idle – ready for a GitHub request'}
-                </div>
-                {githubRateLimit && (
-                  <div className="metadata-rate-limit">
-                    <p>
-                      Rate limit: {githubRateLimit.remaining ?? '–'} / {githubRateLimit.limit ?? '–'} remaining
-                      {githubRateLimit.reset ? ` · resets ${formatRateLimitReset(githubRateLimit.reset)}` : ''}
-                    </p>
-                    {githubRateLimit.remaining === 0 && (
-                      <p className="metadata-rate-warning">GitHub rate limit reached. Retry after reset.</p>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </aside>
         </div>
 
         {showImportModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
-              <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-                <h2 className="text-xl font-semibold text-slate-900">Import Workflow Data</h2>
-                <button onClick={() => setShowImportModal(false)} className="text-slate-400 hover:text-slate-600">
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="import-modal-card">
+              <div className="import-modal-header">
+                <div>
+                  <p className="import-modal-eyebrow">Workflow import</p>
+                  <h2>Source data from Python or GitHub</h2>
+                </div>
+                <button onClick={() => setShowImportModal(false)} className="import-modal-close" aria-label="Close import dialog">
                   ×
                 </button>
               </div>
 
-              <div className="p-6 flex-1 overflow-auto flex flex-col gap-6">
+              <div className="import-modal-content">
                 <div className="import-tablist">
                   <button
                     className={`import-tab ${importTab === 'paste' ? 'is-active' : ''}`}
@@ -1643,83 +1548,176 @@ json.dumps(result)
                   </button>
                 </div>
 
-                {importTab === 'paste' ? (
-                  <>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-2">Upload Python File</label>
-                      <input
-                        type="file"
-                        accept=".py"
-                        onChange={handleFileUpload}
-                        className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                      />
-                    </div>
-
-                    <div className="flex-1">
-                      <label className="block text-sm font-medium text-slate-700 mb-2">Or Paste Python Code</label>
-                      <textarea
-                        value={pythonCode}
-                        onChange={(e) => setPythonCode(e.target.value)}
-                        placeholder={'class UserService:\n    def __init__(self):\n        self.database = Database()\n    def get_user(self):\n        return self.database.query()\n\nclass Database:\n    def query(self):\n        return "data"'}
-                        className="w-full h-64 px-3 py-2 border border-slate-300 rounded-lg font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-
-                    {parseStatus && (
-                      <div className={`import-status ${getStatusTone(parseStatus)}`}>
-                        {parseStatus}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-2">Public GitHub URL</label>
-                      <input
-                        type="url"
-                        value={githubUrl}
-                        onChange={(e) => setGithubUrl(e.target.value)}
-                        placeholder="https://github.com/org/repo/commit/sha or /pull/123"
-                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                      <p className="github-hint">Only public repos are supported (GitHub rate limit 60/hr).</p>
-                    </div>
-
-                    <div className="import-info-stack">
-                      <div className="import-info-card">
-                        <p className="text-sm text-slate-600">
-                          We call GitHub's commits & pulls endpoints via a Netlify function / Vite proxy to avoid CORS.
-                        </p>
-                      </div>
-                      {githubRateLimit && (
-                        <div className="import-info-card">
-                          <p className="text-xs uppercase tracking-wide text-slate-500 mb-1">Rate limit</p>
-                          <p className="text-sm text-slate-700">
-                            {githubRateLimit.remaining ?? '–'} remaining of {githubRateLimit.limit ?? '–'} requests
-                            {githubRateLimit.reset ? ` · resets ${formatRateLimitReset(githubRateLimit.reset)}` : ''}
-                          </p>
+                <div className={`import-dialog-body ${importTab === 'github' ? 'with-details' : ''}`}>
+                  <div className="import-primary-panel">
+                    {importTab === 'paste' ? (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-2">Upload Python File</label>
+                          <input
+                            type="file"
+                            accept=".py"
+                            onChange={handleFileUpload}
+                            className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                          />
                         </div>
-                      )}
-                    </div>
 
-                    {githubStatus && (
-                      <div className={`import-status ${getStatusTone(githubStatus)}`}>
-                        {githubStatus}
-                      </div>
+                        <div className="flex-1">
+                          <label className="block text-sm font-medium text-slate-700 mb-2">Or Paste Python Code</label>
+                          <textarea
+                            value={pythonCode}
+                            onChange={(e) => setPythonCode(e.target.value)}
+                            placeholder={'class UserService:\n    def __init__(self):\n        self.database = Database()\n    def get_user(self):\n        return self.database.query()\n\nclass Database:\n    def query(self):\n        return "data"'}
+                            className="w-full h-64 px-3 py-2 border border-slate-300 rounded-lg font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+
+                        {parseStatus && (
+                          <div className={`import-status ${getStatusTone(parseStatus)}`}>
+                            {parseStatus}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-2">Public GitHub URL</label>
+                          <input
+                            type="url"
+                            value={githubUrl}
+                            onChange={(e) => setGithubUrl(e.target.value)}
+                            placeholder="https://github.com/org/repo/commit/sha or /pull/123"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                          <p className="github-hint">Only public repos are supported (GitHub rate limit 60/hr).</p>
+                        </div>
+
+                        <div className="import-info-stack">
+                          <div className="import-info-card">
+                            <p className="text-sm text-slate-600">
+                              We call GitHub's commits & pulls endpoints via a Netlify function / Vite proxy to avoid CORS.
+                            </p>
+                          </div>
+                          <div className="import-info-card">
+                            <p className="text-xs uppercase tracking-wide text-slate-500 mb-1">What's imported</p>
+                            <p className="text-sm text-slate-700">
+                              File patches map into workflow nodes so commits and PRs share the same layout as pasted code.
+                            </p>
+                          </div>
+                        </div>
+                      </>
                     )}
-                  </>
-                )}
+                  </div>
+
+                  {importTab === 'github' && (
+                    <div className="import-details-panel">
+                      <div className="metadata-card">
+                        <div className="control-heading">
+                          <span className="control-label">GitHub metadata</span>
+                          <p className="control-description">Preview commit context and request status in one place.</p>
+                        </div>
+
+                        {githubMetadata ? (
+                          <>
+                            <div className="metadata-commit">
+                              <div className="metadata-author">
+                                {githubMetadata.author.avatarUrl ? (
+                                  <img src={githubMetadata.author.avatarUrl} alt={githubMetadata.author.name} />
+                                ) : (
+                                  <div className="metadata-avatar-fallback">
+                                    {
+                                      githubMetadata.author.name
+                                        .split(' ')
+                                        .filter(Boolean)
+                                        .map((word) => word[0])
+                                        .join('') || 'GH'
+                                    }
+                                      .slice(0, 2)
+                                      .toUpperCase()
+                                  </div>
+                                )}
+                                <div>
+                                  <p className="metadata-author-name">{githubMetadata.author.name}</p>
+                                  <p className="metadata-author-repo">
+                                    {githubMetadata.repo} · {githubMetadata.identifier}
+                                  </p>
+                                  {githubMetadata.timestamp && (
+                                    <p className="metadata-timestamp">{formatTimestamp(githubMetadata.timestamp)}</p>
+                                  )}
+                                </div>
+                              </div>
+                              <p className="metadata-title">{githubMetadata.title}</p>
+                              <div className="metadata-stats-grid">
+                                <span>+{githubMetadata.stats.additions} additions</span>
+                                <span>-{githubMetadata.stats.deletions} deletions</span>
+                                <span>{githubMetadata.stats.changedFiles} files</span>
+                              </div>
+                              <a className="metadata-link" href={githubMetadata.url} target="_blank" rel="noreferrer">
+                                View on GitHub
+                              </a>
+                            </div>
+
+                            <div className="metadata-file-list">
+                              <div className="metadata-file-header">
+                                <span>Changed files</span>
+                                <span>{githubMetadata.files.length}</span>
+                              </div>
+                              <ul>
+                                {githubMetadata.files.slice(0, 6).map((file) => (
+                                  <li key={file.filename}>
+                                    <div>
+                                      <p className="metadata-file-name">{file.filename}</p>
+                                      <p className="metadata-file-status">{file.status}</p>
+                                    </div>
+                                    <span className="metadata-file-diff">
+                                      +{file.additions} / -{file.deletions}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                              {githubMetadata.files.length > 6 && (
+                                <p className="metadata-file-more">+{githubMetadata.files.length - 6} more files in view</p>
+                              )}
+                            </div>
+                          </>
+                        ) : (
+                          <div className="metadata-empty">
+                            <p>Enter a GitHub commit or PR URL to preview its metadata here.</p>
+                            <p>We will surface author info, file changes, and request status after fetching.</p>
+                          </div>
+                        )}
+
+                        <div className="metadata-status-block">
+                          <div className={`metadata-status-pill ${getStatusTone(githubStatus)}`}>
+                            {githubStatus || 'Idle – ready for a GitHub request'}
+                          </div>
+                          {githubRateLimit && (
+                            <div className="metadata-rate-limit">
+                              <p>
+                                Rate limit: {githubRateLimit.remaining ?? '–'} / {githubRateLimit.limit ?? '–'} remaining
+                                {githubRateLimit.reset ? ` · resets ${formatRateLimitReset(githubRateLimit.reset)}` : ''}
+                              </p>
+                              {githubRateLimit.remaining === 0 && (
+                                <p className="metadata-rate-warning">GitHub rate limit reached. Retry after reset.</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
 
-              <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-3">
-                <button onClick={() => setShowImportModal(false)} className="px-4 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50">
-                  Cancel
+              <div className="import-modal-footer">
+                <button onClick={() => setShowImportModal(false)} className="import-modal-button secondary">
+                  Close
                 </button>
                 {importTab === 'paste' ? (
                   <button
                     onClick={() => parsePythonCode(pythonCode)}
                     disabled={!pythonCode || isLoadingPyodide}
-                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed"
+                    className="import-modal-button primary"
                   >
                     {isLoadingPyodide ? 'Loading Parser...' : 'Parse Code'}
                   </button>
@@ -1727,7 +1725,7 @@ json.dumps(result)
                   <button
                     onClick={handleGitHubImport}
                     disabled={!githubUrl || isFetchingGitHub}
-                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed"
+                    className="import-modal-button primary"
                   >
                     {isFetchingGitHub ? 'Fetching…' : 'Fetch from GitHub'}
                   </button>
@@ -1736,6 +1734,7 @@ json.dumps(result)
             </div>
           </div>
         )}
+
 
         <footer className="workspace-footer">
           <div className="flex items-center gap-4 text-sm text-slate-600">
