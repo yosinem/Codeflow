@@ -1520,7 +1520,7 @@ json.dumps(result)
         </div>
 
         {showImportModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="import-modal-overlay">
             <div className="import-modal-card">
               <div className="import-modal-header">
                 <div>
